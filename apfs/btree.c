@@ -1226,6 +1226,8 @@ int apfs_bt_create(apfs_btree_t* bt, uint32_t bt_flags, uint16_t key_size, uint1
 	bt->info.bt_fixed.bt_node_size = bt->nx->bs;
 	bt->info.bt_fixed.bt_key_size = key_size;
 	bt->info.bt_fixed.bt_val_size = val_size;
+	bt->info.bt_longest_key = key_size;
+	bt->info.bt_longest_val = val_size;
 	bt_apply_info(bt);
 	bt->loaded = 1;
 

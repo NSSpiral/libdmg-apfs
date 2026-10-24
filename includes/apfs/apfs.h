@@ -399,6 +399,7 @@ typedef struct apfs_vol {
 	apfs_btree_t fext;
 	int hashed_names;             /* directory records use hashed keys */
 	int case_fold;                /* case-insensitive names */
+	int sibling_maps;             /* write the APFS_TYPE_SIBLING_MAP index */
 	int sealed;
 	int readonly;
 	xid_t snap_xid;               /* nonzero when mounted from a snapshot */
@@ -595,7 +596,14 @@ enum {
 
 int apfs_decmpfs_size(apfs_vol_t* vol, const apfs_inode_t* inode, uint64_t* size);
 int apfs_decmpfs_read(apfs_vol_t* vol, const apfs_inode_t* inode, uint64_t off, void* buf, size_t len, size_t* got);
+/* Hash expanded compressed storage without opening or modifying an image. */
+typedef int (*apfs_read_at_fn)(void* ctx, uint64_t off, void* buf, size_t len);
+int apfs_decmpfs_digest(const uint8_t* attr, size_t len, uint64_t resource_size,
+        apfs_read_at_fn read_resource, void* ctx, uint8_t digest[32]);
 int apfs_file_write_compressed(apfs_vol_t* vol, uint64_t ino, const uint8_t* data, size_t size, int algo);
+/* Preserve a decmpfs type; UINT64_MAX leaves the resource fork length automatic. */
+int apfs_file_write_compressed_type(apfs_vol_t* vol, uint64_t ino, const uint8_t* data,
+        size_t size, uint32_t type, uint64_t resource_size);
 int apfs_compress_parse(const char* name, int* algo);
 const char* apfs_decmpfs_type_name(uint32_t type);
 
@@ -642,6 +650,8 @@ int apfs_vol_root_hash_metadata(apfs_vol_t* vol, uint8_t out[APFS_ROOT_HASH_META
 /* Consistency checks (verify.c) */
 
 int apfs_verify(apfs_nx_t* nx, int verbose);
+/* Check native logical records before importing any blocks. */
+int apfs_verify_fs_records(apfs_vol_t* vol, const apfs_kv_t* records, size_t count);
 
 #ifdef __cplusplus
 }

@@ -19,6 +19,11 @@ typedef struct {
 	int preserve_owner;           /* addall/untar: keep the owners of the source */
 	int preserve_mode;            /* add: copy permissions and times from the source */
 	int compress;                 /* APFS_COMPRESS_* for new file contents */
+	int (*compression_for_path)(const char *path, void *context);
+	int (*compression_layout_for_path)(const char *path, void *context, uint32_t *type, uint64_t *resource_size);
+	void *compression_context;
+	uint32_t compression_type;
+	uint64_t resource_fork_size;
 	int sparse;                   /* turn zero blocks into holes */
 	int xattrs;                   /* copy extended attributes */
 	int quiet;

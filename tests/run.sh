@@ -346,7 +346,7 @@ if command -v tar >/dev/null 2>&1; then
 	fi
 	f "untar refuses the dangling hard link" A tar.raw untar dangling.tar /dangling
 	cp cmd.out dangling.out
-	t "and says why" grep -q "cannot hard link sub/b" dangling.out
+	t "and says why" sh -c 'grep -q "cannot hard link " dangling.out && grep -Fq -- "$1" dangling.out' sh "$target"
 	f "and writes nothing" A tar.raw stat /dangling
 fi
 if [ "$(uname)" = Darwin ] && tar --version 2>/dev/null | grep -q bsdtar; then

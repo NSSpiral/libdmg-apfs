@@ -70,6 +70,7 @@ static void vol_set_flags(apfs_vol_t* vol) {
 	uint64_t incompat = LE64(vol->sb->apfs_incompatible_features);
 	vol->case_fold = (incompat & APFS_INCOMPAT_CASE_INSENSITIVE) != 0;
 	vol->hashed_names = (incompat & (APFS_INCOMPAT_CASE_INSENSITIVE | APFS_INCOMPAT_NORMALIZATION_INSENSITIVE)) != 0;
+	vol->sibling_maps = 1;
 	vol->sealed = (incompat & APFS_INCOMPAT_SEALED_VOLUME) != 0;
 }
 

@@ -146,8 +146,10 @@ static void make_empty_fixed_root(uint8_t* buf, uint32_t bs, oid_t oid, uint32_t
 	apfs_put32(info + 4, bs);
 	apfs_put32(info + 8, ksize);
 	apfs_put32(info + 12, vsize);
-	apfs_put32(info + 16, 0);
-	apfs_put32(info + 20, 0);
+	/* Fixed-width trees advertise their widths even before the first key.
+	 * In particular, an empty free queue still has 16-byte keys. */
+	apfs_put32(info + 16, ksize);
+	apfs_put32(info + 20, vsize);
 	apfs_put64(info + 24, 0);
 	apfs_put64(info + 32, 1);
 }

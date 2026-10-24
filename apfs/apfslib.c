@@ -23,6 +23,7 @@ void apfslib_default_opts(apfslib_opts_t* o) {
 	o->file_mode = 0644;
 	o->dir_mode = 0755;
 	o->xattrs = 1;
+	o->resource_fork_size = UINT64_MAX;
 }
 
 static void report(const char* what, const char* path, int err) {
@@ -649,12 +650,14 @@ static int prepare_file(apfs_vol_t* vol, const char* dst, const char* srcname, c
 }
 
 static int write_from_file(apfs_vol_t* vol, uint64_t ino, FILE* f, uint64_t size, const apfslib_opts_t* o) {
-	if(o->compress != APFS_COMPRESS_NONE) {
+	if(o->compress != APFS_COMPRESS_NONE || o->compression_type) {
 		uint8_t* data;
 		int ret = read_all(f, size, &data);
 		if(ret < 0)
 			return ret;
-		ret = apfs_file_write_compressed(vol, ino, data, (size_t)size, o->compress);
+		ret = o->compression_type ? apfs_file_write_compressed_type(vol, ino, data,
+			(size_t)size, o->compression_type, o->resource_fork_size) :
+			apfs_file_write_compressed(vol, ino, data, (size_t)size, o->compress);
 		free(data);
 		return ret;
 	}
@@ -716,8 +719,10 @@ int apfslib_add_data(apfs_vol_t* vol, const uint8_t* data, size_t size, const ch
 	uint64_t ino;
 	int ret = prepare_file(vol, dst, NULL, o, o->file_mode, &ino);
 	if(ret == APFS_OK) {
-		if(o->compress != APFS_COMPRESS_NONE) {
-			ret = apfs_file_write_compressed(vol, ino, data, size, o->compress);
+		if(o->compress != APFS_COMPRESS_NONE || o->compression_type) {
+			ret = o->compression_type ? apfs_file_write_compressed_type(vol, ino, data,
+				size, o->compression_type, o->resource_fork_size) :
+				apfs_file_write_compressed(vol, ino, data, size, o->compress);
 		} else {
 			mem_src_t m;
 			m.p = data;
@@ -923,7 +928,13 @@ static int add_tree(add_ctx_t* c, const char* srcdir, uint64_t dir, const char* 
 					c->errors++;
 					goto next;
 				}
-				ret = write_from_file(c->vol, ino, f, st.size, c->o);
+				apfslib_opts_t file_options = *c->o;
+				if (c->o->compression_for_path)
+					file_options.compress = c->o->compression_for_path(dst, c->o->compression_context);
+				ret = c->o->compression_layout_for_path ?
+					c->o->compression_layout_for_path(dst, c->o->compression_context,
+						&file_options.compression_type, &file_options.resource_fork_size) : APFS_OK;
+				if(ret >= 0) ret = write_from_file(c->vol, ino, f, st.size, &file_options);
 				fclose(f);
 				if(ret < 0) {
 					report("cannot write", dst, ret);

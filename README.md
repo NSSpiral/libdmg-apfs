@@ -8,11 +8,14 @@ accepts the same commands, works directly on raw images, UDIF disk images
 change the file system images of iOS and macOS restore IPSWs.
 
 Everything is implemented from the on-disk format: no kernel driver, FUSE or
-macOS frameworks are involved, and the only dependency is zlib.
+macOS frameworks are involved. The dependencies are zlib and json-c for the
+POSIX native-manifest commands.
 
 ## Building
 
-You need GNU make, a C99 compiler and zlib.
+You need GNU make, a C99 compiler, zlib and json-c development headers/libraries.
+`pkg-config` supplies json-c flags when available. Windows builds retain the
+other commands without json-c; native-manifest commands currently require POSIX.
 
 ```sh
 make            # build/apfs-tool, build/dmg and build/libapfs.a
@@ -74,6 +77,36 @@ opens a snapshot of it read-only.
 `-c` compresses new files with `zlib`, `lzvn` or `lzfse` (stored the way
 macOS stores compressed files, readable by the kernel); `addall -P` keeps the
 owners of the source files, `-O` sets them.
+
+Native manifest interchange preserves Apple metadata without applying it to
+the host staging tree:
+
+```sh
+apfs-tool source.dmg extractall tree --manifest manifest.json
+apfs-tool - validateall tree --manifest manifest.json
+apfs-tool fresh.raw create 3g -n Root -e
+apfs-tool fresh.raw addall tree / --manifest manifest.json
+apfs-tool fresh.raw verify
+```
+
+Keep `manifest.json.files/` beside the JSON file. Export paths must be new.
+Import requires a fresh empty volume with the same block size and name
+comparison modes. `manifest-version` prints the schema,
+`apple-firmware.apfs-native/1`. The manifest retains inode IDs, timestamps,
+ownership, modes, flags, FinderInfo, hardlinks, symlinks, xattrs and original
+compressed storage. Allocation, checkpoint history and clone sharing are rebuilt.
+Special nodes remain in the manifest and need no host device privileges.
+
+Validation checks catalog relationships, host links, stream layouts and content
+hashes before import. It independently decodes decmpfs types 1/3/4/7/8/9/10/11/12.
+Native interchange accepts one unencrypted, unsealed volume without snapshots
+or auxiliary index trees. Unsupported records and formats fail explicitly.
+
+For a host tree without a native manifest, use `addall tree / --metadata
+metadata.json`. The `apple-firmware.portable-metadata/1` document supplies
+ownership, modes, timestamps, BSD flags and base64 xattrs. Entries with
+`UF_COMPRESSED` use its `compression` algorithm. Contents and links come from
+the host tree. Manifest commands require POSIX and run without mounting images.
 
 #### Tar archives
 
@@ -150,6 +183,7 @@ normalization-insensitive, like on iOS.
 Raw images are sparse files where the host file system supports them, also
 when exported with `raw`, copied with `-o` or written by `dmg extract`: a new
 100 GB image takes about 150 KB of disk.
+`create` refuses existing output paths. Fresh formatting needs no donor image.
 
 ### The dmg tool
 

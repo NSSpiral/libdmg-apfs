@@ -965,7 +965,7 @@ static int sibling_insert(apfs_vol_t* vol, uint64_t ino, uint64_t sibling, uint6
 	memcpy(val + 10, name, nlen);
 	ret = apfs_bt_insert(&vol->fs, key, sizeof(key), val, (uint16_t)(10 + nlen));
 	free(val);
-	if(ret < 0)
+	if(ret < 0 || !vol->sibling_maps)
 		return ret;
 	apfs_key_hdr(mkey, sibling, APFS_TYPE_SIBLING_MAP);
 	apfs_put64(mval, ino);

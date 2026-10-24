@@ -389,14 +389,9 @@ static vinode_t* find_inode(vfs_t* f, uint64_t ino) {
 	return NULL;
 }
 
-static int stream_cmp(const void* a, const void* b) {
-	const vstream_t* x = (const vstream_t*)a;
-	const vstream_t* y = (const vstream_t*)b;
-	return x->id < y->id ? -1 : (x->id > y->id ? 1 : 0);
-}
-
-/* Streams are added in id order while the tree is walked, and sorted once
- * the separate extent tree of a sealed volume has been merged in */
+/* External xattrs can introduce stream IDs far ahead of the catalog walk.
+ * Insert at the binary-search position rather than re-sorting the full array
+ * for each such reference. */
 static vstream_t* stream(vfs_t* f, uint64_t id, int create) {
 	size_t lo = 0, hi = f->nstreams;
 	if(f->nstreams && f->streams[f->nstreams - 1].id == id)
@@ -413,16 +408,11 @@ static vstream_t* stream(vfs_t* f, uint64_t id, int create) {
 	if(!create)
 		return NULL;
 	f->streams = (vstream_t*)grow(f->streams, &f->capstreams, f->nstreams, sizeof(vstream_t));
-	if(f->nstreams && f->streams[f->nstreams - 1].id > id) {
-		memset(&f->streams[f->nstreams], 0, sizeof(vstream_t));
-		f->streams[f->nstreams].id = id;
-		f->nstreams++;
-		qsort(f->streams, f->nstreams, sizeof(vstream_t), stream_cmp);
-		return stream(f, id, 0);
-	}
-	memset(&f->streams[f->nstreams], 0, sizeof(vstream_t));
-	f->streams[f->nstreams].id = id;
-	return &f->streams[f->nstreams++];
+	memmove(f->streams + lo + 1, f->streams + lo, (f->nstreams - lo) * sizeof(vstream_t));
+	memset(&f->streams[lo], 0, sizeof(vstream_t));
+	f->streams[lo].id = id;
+	f->nstreams++;
+	return &f->streams[lo];
 }
 
 static void add_extent(vctx_t* c, vfs_t* f, uint64_t id, uint64_t logical, uint64_t len_flags, paddr_t phys) {
@@ -461,8 +451,10 @@ static void parse_drec(vctx_t* c, apfs_vol_t* vol, vfs_t* f, const apfs_kv_t* kv
 		nlen = apfs_get32(kv->k + 8) & J_DREC_LEN_MASK;
 		hash = apfs_get32(kv->k + 8) & J_DREC_HASH_MASK;
 		name = (const char*)kv->k + 12;
-		if(12 + nlen != kv->klen)
+		if(12 + nlen != kv->klen) {
 			problem(c, "directory record in 0x%llx has a bad name length", (unsigned long long)parent);
+			return;
+		}
 	} else {
 		if(kv->klen < 11) {
 			problem(c, "directory record in 0x%llx is too short", (unsigned long long)parent);
@@ -470,10 +462,12 @@ static void parse_drec(vctx_t* c, apfs_vol_t* vol, vfs_t* f, const apfs_kv_t* kv
 		}
 		nlen = apfs_get16(kv->k + 8);
 		name = (const char*)kv->k + 10;
-		if(10 + nlen != kv->klen)
+		if(10 + nlen != kv->klen) {
 			problem(c, "directory record in 0x%llx has a bad name length", (unsigned long long)parent);
+			return;
+		}
 	}
-	if(!nlen || name[nlen - 1] != 0 || strlen(name) + 1 != nlen) {
+	if(!nlen || name[nlen - 1] != 0 || memchr(name, 0, nlen - 1) != NULL) {
 		problem(c, "directory record in 0x%llx has a bad name", (unsigned long long)parent);
 		return;
 	}
@@ -779,6 +773,68 @@ static int check_fs(vctx_t* c, apfs_vol_t* vol, vpexts_t* pexts, int nsnaps) {
 	return ret;
 }
 
+int apfs_verify_fs_records(apfs_vol_t* vol, const apfs_kv_t* records, size_t count) {
+    vctx_t c;
+    vfs_t f;
+    size_t i;
+    memset(&c, 0, sizeof(c)); memset(&f, 0, sizeof(f)); c.nx = vol->nx;
+    for(i = 0; i < count; i++) {
+        const apfs_kv_t* kv = &records[i];
+        uint64_t id;
+        if(kv->klen < 8) { problem(&c, "short native key"); continue; }
+        id = apfs_key_id(kv->k);
+        if(id > f.max_id) f.max_id = id;
+        switch(apfs_key_type(kv->k)) {
+            case APFS_TYPE_INODE:
+                if(kv->klen != 8) problem(&c, "bad native inode key");
+                else parse_inode(&c, &f, kv);
+                break;
+            case APFS_TYPE_DIR_REC: parse_drec(&c, vol, &f, kv); break;
+            case APFS_TYPE_XATTR:
+                if(kv->klen < 12 || apfs_get16(kv->k + 8) != kv->klen - 10 ||
+                   kv->k[kv->klen - 1] || memchr(kv->k + 10, 0, kv->klen - 11) ||
+                   kv->vlen < 4 || apfs_get16(kv->v + 2) != kv->vlen - 4 ||
+                   ((apfs_get16(kv->v) & 3) != XATTR_DATA_STREAM &&
+                    (apfs_get16(kv->v) & 3) != XATTR_DATA_EMBEDDED))
+                    problem(&c, "bad native extended attribute");
+                else parse_xattr(&c, &f, kv);
+                break;
+            case APFS_TYPE_DSTREAM_ID:
+                if(kv->klen != 8 || kv->vlen != 4) problem(&c, "bad native stream reference");
+                else { vstream_t* s = stream(&f, id, 1); s->has_rec = 1; s->refcnt = apfs_get32(kv->v); }
+                break;
+            case APFS_TYPE_FILE_EXTENT:
+                if(kv->klen != 16 || kv->vlen != 24) problem(&c, "bad native extent");
+                else add_extent(&c, &f, id, apfs_get64(kv->k + 8), apfs_get64(kv->v), apfs_get64(kv->v + 8));
+                break;
+            case APFS_TYPE_SIBLING_LINK:
+                if(kv->klen != 16 || kv->vlen < 12 || apfs_get16(kv->v + 8) != kv->vlen - 10 ||
+                   kv->v[kv->vlen - 1] || memchr(kv->v + 10, 0, kv->vlen - 11))
+                    problem(&c, "bad native sibling record");
+                else if(apfs_get64(kv->k + 8) > f.max_id) f.max_id = apfs_get64(kv->k + 8);
+                break;
+            case APFS_TYPE_SIBLING_MAP:
+                if(kv->klen != 8 || kv->vlen != 8) problem(&c, "bad native sibling map");
+                break;
+            case APFS_TYPE_DIR_STATS:
+                if(kv->klen != 8 || kv->vlen != 32) problem(&c, "bad native directory statistics");
+                break;
+            case APFS_TYPE_FILE_INFO:
+                if(kv->klen != 16 || kv->vlen < 3 || kv->vlen != 3U + kv->v[2])
+                    problem(&c, "bad native file information");
+                break;
+            default: problem(&c, "unsupported native record"); break;
+        }
+    }
+    vinode_t* root = find_inode(&f, ROOT_DIR_INO_NUM);
+    if(!root || (root->mode & APFS_S_IFMT) != APFS_S_IFDIR)
+        problem(&c, "native root directory is missing");
+    check_links(&c, vol, &f); check_streams(&c, &f);
+    if(f.max_id >= LE64(vol->sb->apfs_next_obj_id)) problem(&c, "native next object id is too low");
+    free(f.inodes); free(f.streams); free(f.drecs); free(f.refs);
+    return c.problems ? APFS_ECORRUPT : APFS_OK;
+}
+
 /* Volumes */
 
 static int is_listed(const oid_t* list, size_t n, oid_t oid) {
@@ -949,6 +1005,9 @@ static void check_free_queues(vctx_t* c, spaceman_phys_t* sm) {
 			continue;
 		apfs_bt_init(&bt, c->nx, NULL, NULL, OBJ_EPHEMERAL, OBJECT_TYPE_SPACEMAN_FREE_QUEUE, root, apfs_cmp_u64pair);
 		ret = apfs_bt_load(&bt);
+		if(ret == APFS_OK && (bt.info.bt_fixed.bt_key_size != 16 || bt.info.bt_fixed.bt_val_size != 8 ||
+				bt.info.bt_longest_key != 16 || bt.info.bt_longest_val > 8))
+			problem(c, "free queue %d has invalid fixed record widths or maximum key/value sizes", q);
 		if(ret == APFS_OK)
 			ret = apfs_bt_iter_seek(&it, &bt, NULL, 0);
 		while(ret == APFS_OK && it.valid) {

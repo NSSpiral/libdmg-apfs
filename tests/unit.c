@@ -814,6 +814,70 @@ static void test_mkfs_over_old(const char* dir) {
 	remove(path);
 }
 
+static void test_free_queue_footer(const char* dir) {
+	char path[1024];
+	apfs_image_t* img;
+	apfs_eph_t* e;
+	uint8_t* info;
+	uint32_t longest;
+	snprintf(path, sizeof(path), "%s/unit-free-queue.raw", dir);
+	img = make_image(path, 16ULL << 20, 1);
+	if(!img) return;
+	CHECK(apfs_verify(img->nx, 0) == APFS_OK);
+	e = apfs_nx_eph(img->nx, 0x402);
+	CHECK(e != NULL);
+	if(e) {
+		info = e->data + img->nx->bs - sizeof(btree_info_t);
+		longest = apfs_get32(info + 16);
+		CHECK(longest == sizeof(spaceman_free_queue_key_t));
+		apfs_put32(info + 16, 0);
+		apfs_obj_set_cksum(e->data, img->nx->bs);
+		CHECK(apfs_verify(img->nx, 0) == APFS_ECORRUPT);
+		apfs_put32(info + 16, longest);
+		apfs_obj_set_cksum(e->data, img->nx->bs);
+		CHECK(apfs_verify(img->nx, 0) == APFS_OK);
+	}
+	apfs_image_close(img, 0);
+	remove(path);
+}
+
+static void test_compressed_digest(const char* dir) {
+	char path[1024];
+	uint8_t data[4096], expected[32], digest[32];
+	apfslib_opts_t options;
+	apfs_image_t* img;
+	apfs_vol_t* vol = NULL;
+	int algorithms[] = { APFS_COMPRESS_ZLIB, APFS_COMPRESS_LZVN, APFS_COMPRESS_LZFSE };
+	size_t i;
+	memset(data, 'a', sizeof(data));
+	apfs_sha256(data, sizeof(data), expected);
+	snprintf(path, sizeof(path), "%s/unit-compressed-digest.raw", dir);
+	img = make_image(path, 16ULL << 20, 1);
+	if(!img) return;
+	CHECK(apfs_vol_open(img->nx, 0, &vol) == APFS_OK);
+	if(!vol) { apfs_image_close(img, 0); remove(path); return; }
+	for(i = 0; i < sizeof(algorithms) / sizeof(algorithms[0]); i++) {
+		uint64_t ino;
+		uint8_t* attr = NULL;
+		size_t length = 0;
+		apfslib_default_opts(&options);
+		options.compress = algorithms[i];
+		CHECK(apfslib_add_data(vol, data, sizeof(data), "/compressed", &options) == APFS_OK);
+		CHECK(apfs_lookup(vol, "/compressed", 0, &ino, NULL, NULL) == APFS_OK);
+		CHECK(apfs_xattr_get(vol, ino, DECMPFS_EA_NAME, &attr, &length) == APFS_OK);
+		if(attr && length > 20) {
+			CHECK(apfs_decmpfs_digest(attr, length, 0, NULL, NULL, digest) == APFS_OK);
+			CHECK(!memcmp(digest, expected, 32));
+			CHECK(apfs_decmpfs_digest(attr, length - 4, 0, NULL, NULL, digest) == APFS_ECORRUPT);
+			apfs_put64(attr + 8, sizeof(data) - 1);
+			CHECK(apfs_decmpfs_digest(attr, length, 0, NULL, NULL, digest) == APFS_ECORRUPT);
+		}
+		free(attr);
+	}
+	apfs_image_close(img, 0);
+	remove(path);
+}
+
 /* Data written around blocks of zeros, from an offset that is not block
  * aligned up to a last byte that is not zero, reads back unchanged */
 static void test_write_sparse(const char* dir) {
@@ -1703,6 +1767,8 @@ int main(int argc, char** argv) {
 	test_mtree(dir);
 	test_mkfs_over_old(dir);
 	test_write_sparse(dir);
+	test_free_queue_footer(dir);
+	test_compressed_digest(dir);
 	test_case_insensitive(dir);
 	test_many_files(dir);
 	workload(dir, 1, 0x1234567ULL, 30);

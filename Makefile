@@ -7,7 +7,7 @@
 #   make install         install into $(PREFIX)/bin
 #   make CC=x86_64-w64-mingw32-gcc   cross-compile for Windows
 #
-# Requirements: a C99 compiler and zlib.
+# Requirements: a C99 compiler, zlib and json-c (POSIX manifest commands).
 
 CC ?= cc
 AR ?= ar
@@ -29,6 +29,9 @@ EXE :=
 ifeq ($(TARGET_WIN),1)
 EXE := .exe
 override CFLAGS += -D__USE_MINGW_ANSI_STDIO=1
+else
+override CFLAGS += $(shell pkg-config --cflags json-c 2>/dev/null)
+LDLIBS += $(or $(shell pkg-config --libs json-c 2>/dev/null),-ljson-c)
 endif
 
 LZFSE_SRC := third_party/lzfse/lzfse_decode.c third_party/lzfse/lzfse_decode_base.c \
@@ -43,7 +46,7 @@ APFS_SRC := apfs/util.c apfs/unicode.c apfs/btree.c apfs/omap.c apfs/spaceman.c 
 	apfs/image.c apfs/debug.c apfs/snapshot.c apfs/compress.c apfs/file.c \
 	apfs/mkfs.c apfs/platform.c apfs/apfslib.c apfs/tar.c apfs/udif.c \
 	apfs/resize.c apfs/seal.c apfs/verify.c apfs/trustcache.c apfs/mtree.c \
-	apfs/crypto.c apfs/encrypted.c
+	apfs/crypto.c apfs/encrypted.c apfs/manifest.c
 
 LIB_SRC := $(COMMON_SRC) $(APFS_SRC) $(LZFSE_SRC)
 LIB_OBJ := $(LIB_SRC:%.c=$(BUILD)/obj/%.o)

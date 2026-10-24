@@ -22,6 +22,8 @@
 #include "apfs/platform.h"
 #include "apfs/trustcache.h"
 #include "apfs/mtree.h"
+#include "lzfse.h"
+#include "apfs/manifest.h"
 
 #define APFS_TOOL_VERSION "1.0"
 
@@ -206,6 +208,8 @@ static int cmd_extract(ctx_t* c, int argc, char** argv) {
 }
 
 static int cmd_extractall(ctx_t* c, int argc, char** argv) {
+	if(argc == 4 && !strcmp(argv[2], "--manifest"))
+		return apfs_manifest_export(c->vol, argv[1], argv[3]) < 0;
 	int i = parse_opts(c, argc, argv, "Xq", NULL);
 	if(i < 0)
 		return 1;
@@ -292,8 +296,18 @@ static int cmd_rmall(ctx_t* c, int argc, char** argv) {
 }
 
 static int cmd_addall(ctx_t* c, int argc, char** argv) {
+	int legacy_hardlinks = argc > 1 && !strcmp(argv[1], "--legacy-hardlinks");
+	if(legacy_hardlinks) {
+		c->vol->sibling_maps = 0;
+		argc--;
+		argv++;
+	}
+	if(argc == 5 && !strcmp(argv[2], "/") && !strcmp(argv[3], "--manifest"))
+		return apfs_manifest_import(c->vol, argv[1], argv[4]) < 0;
+	if(argc == 5 && !strcmp(argv[2], "/") && !strcmp(argv[3], "--metadata"))
+		return apfs_metadata_import(c->vol, argv[1], argv[4]) < 0;
 	int i = parse_opts(c, argc, argv, "csPOXq", NULL);
-	if(i < 0 || !need(argc - i + 1, 2, "addall [-c algo] [-s] [-P] [-O uid:gid] [-X] <dir> [dst]"))
+	if(i < 0 || !need(argc - i + 1, 2, "addall [--legacy-hardlinks] [-c algo] [-s] [-P] [-O uid:gid] [-X] <dir> [dst]"))
 		return 1;
 	return apfslib_addall(c->vol, argv[i], i + 1 < argc ? argv[i + 1] : "/", &c->opts) < 0;
 }
@@ -849,6 +863,11 @@ static int do_create(const char* path, int argc, char** argv) {
 	const char* format = NULL;
 	const char* ext;
 	char* raw_path;
+	plat_stat_t existing;
+	if(plat_lstat(path, &existing) == APFS_OK) {
+		fprintf(stderr, "error: create output already exists\n");
+		return 1;
+	}
 
 	if(argc < 2 || parse_size(argv[1], &size) < 0) {
 		fprintf(stderr, "usage: apfs-tool <image> create <size> [-b blocksize] [-u uuid] [-f raw|dmg|im4p]\n"
@@ -945,6 +964,37 @@ typedef struct {
 	int needs_volume;
 } command_t;
 
+/* Bounded host-side block decoding for OTA PBZE metadata. No image is opened. */
+static int decode_lzfse_block(const char *source, const char *destination, const char *size_string) {
+	char *end = NULL;
+	unsigned long long requested = strtoull(size_string, &end, 10);
+	FILE *in = NULL, *out = NULL;
+	uint8_t *encoded = NULL, *decoded = NULL;
+	long length;
+	int result = 1;
+	if (!*size_string || !end || *end || !requested || requested > 256ULL*1024*1024) {
+		fprintf(stderr, "error: invalid LZFSE decoded block size\n");
+		return 1;
+	}
+	in = fopen(source, "rb");
+	if (!in || fseek(in, 0, SEEK_END) || (length = ftell(in)) < 4 || length > 256L*1024*1024 || fseek(in, 0, SEEK_SET)) goto done;
+	encoded = malloc((size_t)length); decoded = malloc((size_t)requested + 1);
+	if (!encoded || !decoded || fread(encoded, 1, (size_t)length, in) != (size_t)length ||
+		memcmp(encoded + length - 4, "bvx$", 4) ||
+		lzfse_decode_buffer(decoded, (size_t)requested + 1, encoded, (size_t)length, NULL) != requested) goto done;
+	out = fopen(destination, "wbx");
+	if (!out) goto done;
+	if (fwrite(decoded, 1, (size_t)requested, out) != requested) { fclose(out); out = NULL; remove(destination); goto done; }
+	result = fclose(out) != 0; out = NULL;
+	if (result) remove(destination);
+done:
+	if (in) fclose(in);
+	if (out) fclose(out);
+	free(encoded); free(decoded);
+	if (result) fprintf(stderr, "error: invalid LZFSE block or output failure\n");
+	return result;
+}
+
 static const command_t commands[] = {
 	{ "ls", cmd_ls, 0, 1 },
 	{ "cat", cmd_cat, 0, 1 },
@@ -997,6 +1047,13 @@ static void usage(const char* prog) {
 	printf("usage: %s <image> [-V volume] [-S snapshot] [-o output] [-t tmpdir] [-k key | -p passphrase] [-q] [-v]\n", prog);
 	printf("                  <command> [arguments]\n");
 	printf("       %s <image> create <size> [options]\n\n", prog);
+	printf("Native metadata interchange (POSIX, one unencrypted/unsealed volume):\n");
+	printf("  apfs-tool - manifest-version\n");
+	printf("  apfs-tool - decode-lzfse INPUT OUTPUT DECODED_BYTES\n");
+	printf("  apfs-tool SOURCE extractall TREE --manifest MANIFEST.json\n");
+	printf("  apfs-tool - validateall TREE --manifest MANIFEST.json\n");
+	printf("  apfs-tool FRESH addall TREE / --manifest MANIFEST.json\n\n");
+	printf("  apfs-tool FRESH addall TREE / --metadata METADATA.json\n\n");
 	printf("<image> may be a raw image (bare or GPT), a UDIF disk image (.dmg), an IMG4 payload (.im4p),\n");
 	printf("an encrypted disk image (hdiutil -encryption) or an Apple Encrypted Archive (.aea).\n");
 	printf("Modified disk images and payloads are written back in their original format (or to -o).\n");
@@ -1015,7 +1072,8 @@ static void usage(const char* prog) {
 	printf("  chmod [-R] <mode> <path>                 change permissions (octal)\n");
 	printf("  chown [-R] <uid>:<gid> <path>            change owner\n");
 	printf("  rmall [path]                             remove a directory tree\n");
-	printf("  addall [-c algo] [-s] [-P] [-O uid:gid] [-X] <dir> [dst]   copy a directory tree in\n");
+	printf("  addall [--legacy-hardlinks] [-c algo] [-s] [-P] [-O uid:gid] [-X] <dir> [dst]\n");
+	printf("                                           copy a directory tree in\n");
 	printf("  grow <size>                              grow the container\n");
 	printf("  untar [-c algo] [-s] <tar> [dst]         extract a tar archive into the image\n");
 	printf("  getattr <path> <name>                    write an extended attribute to stdout\n");
@@ -1062,6 +1120,14 @@ int main(int argc, char* argv[]) {
 	int i, ret, writable, vi;
 
 	TestByteOrder();
+	if(argc == 6 && !strcmp(argv[1], "-") && !strcmp(argv[2], "decode-lzfse"))
+		return decode_lzfse_block(argv[3], argv[4], argv[5]);
+	if(argc == 3 && !strcmp(argv[2], "manifest-version")) {
+		puts(APFS_NATIVE_SCHEMA);
+		return 0;
+	}
+	if(argc == 6 && !strcmp(argv[1], "-") && !strcmp(argv[2], "validateall") && !strcmp(argv[4], "--manifest"))
+		return apfs_manifest_validate(argv[3], argv[5]) < 0;
 #ifdef _WIN32
 	/* cat and getattr write file contents to standard output */
 	_setmode(_fileno(stdout), _O_BINARY);

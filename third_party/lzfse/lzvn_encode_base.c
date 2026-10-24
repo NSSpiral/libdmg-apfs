@@ -591,3 +591,110 @@ size_t lzvn_encode_buffer(void *__restrict dst, size_t dst_size,
     return 0;      // could not encode entire input stream = fail
   return dst_used; // return encoded size
 }
+
+/* Higher-ratio fallback for fixed-size AFSC resource forks. The ordinary
+ * encoder and its public behavior remain unchanged. Scratch: 512 KiB; input
+ * is limited to one 64 KiB AFSC chunk. */
+static void lzvn_encode_deep(lzvn_encoder_state *state, int32_t *heads, int32_t *chain) {
+  const lzvn_match_info NO_MATCH = {0};
+
+  for (; state->src_current < state->src_current_end; state->src_current++) {
+    // Get 4 bytes at src_current
+    uint32_t vi = load4(state->src + state->src_current);
+
+    uint32_t h = ((vi & 0xffffffu) * 0x9e3779b1u) >> 16;
+    int32_t candidate = heads[h];
+    chain[state->src_current] = candidate;
+    heads[h] = (int32_t)state->src_current;
+
+    // Do not check matches if still in previously emitted match
+    if (state->src_current < state->src_literal)
+      goto after_emit;
+
+    lzvn_match_info incoming = NO_MATCH;
+
+    for (unsigned depth = 0; candidate >= 0 && depth < 128; ++depth) {
+      lzvn_offset nk = nmatch4(state->src, state->src_current, candidate);
+      CHECK_CANDIDATE(candidate, nk);
+      candidate = chain[candidate];
+    }
+
+    // Check candidate at previous distance
+    if (state->d_prev != 0) {
+      lzvn_match_info m1;
+      if (lzvn_find_match(state->src, state->src_begin, state->src_end,
+                    state->src_literal, state->src_current - state->d_prev,
+                    state->src_current, &m1)) {
+        m1.K = m1.M - 1; // fix K for D_prev
+        UPDATE(incoming, m1);
+      }
+    }
+
+    // Here we have the best candidate in incoming, may be NO_MATCH
+
+    // If no incoming match, and literal backlog becomes too high, emit pending
+    // match, or literals if there is no pending match
+    if (incoming.M == 0) {
+      if (state->src_current - state->src_literal >=
+          LZVN_ENCODE_MAX_LITERAL_BACKLOG) // at this point, we always have
+                                           // current >= literal
+      {
+        if (state->pending.M != 0) {
+          EMIT_MATCH(state->pending);
+          state->pending = NO_MATCH;
+        } else {
+          EMIT_LITERAL(271); // emit long literal (271 is the longest literal size we allow)
+        }
+      }
+      goto after_emit;
+    }
+
+    if (state->pending.M == 0) {
+      // No pending match, emit nothing, keep incoming
+      state->pending = incoming;
+    } else {
+      // Here we have both incoming and pending
+      if (state->pending.m_end <= incoming.m_begin) {
+        // No overlap: emit pending, keep incoming
+        EMIT_MATCH(state->pending);
+        state->pending = incoming;
+      } else {
+        // If pending is better, emit pending and discard incoming.
+        // Otherwise, emit incoming and discard pending.
+        if (incoming.K > state->pending.K)
+          state->pending = incoming;
+        EMIT_MATCH(state->pending);
+        state->pending = NO_MATCH;
+      }
+    }
+
+  after_emit:
+
+    // We commit state changes only after we tried to emit instructions, so we
+    // can restart in the same state in case dst was full and we quit the loop.
+    ;
+
+  } // i loop
+
+  // Do not emit pending match here. We do it only at the end of stream.
+}
+
+size_t lzvn_encode_buffer_deep(void *dst, size_t dst_size, const void *src,
+                               size_t src_size, void *scratch) {
+  if (src_size > 65536 || src_size < 8 || dst_size < 16) return 0;
+  int32_t *heads = scratch;
+  int32_t *chain = heads + 65536;
+  for (size_t i = 0; i < 65536; ++i) heads[i] = -1;
+  lzvn_encoder_state state;
+  memset(&state, 0, sizeof(state));
+  state.src = src;
+  state.src_end = src_size;
+  state.src_current_end = src_size - LZVN_ENCODE_MIN_MARGIN;
+  state.dst = state.dst_begin = dst;
+  state.dst_end = (unsigned char *)dst + dst_size - 8;
+  lzvn_encode_deep(&state, heads, chain);
+  lzvn_emit_literal(&state, state.src_end - state.src_literal);
+  state.dst_end = (unsigned char *)dst + dst_size;
+  lzvn_emit_end_of_stream(&state);
+  return state.src_literal == (lzvn_offset)src_size ? state.dst - state.dst_begin : 0;
+}

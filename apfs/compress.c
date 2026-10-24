@@ -133,6 +133,92 @@ static size_t decode_block(uint32_t type, uint8_t* dst, size_t dst_size, const u
 	}
 }
 
+/* Leave room for one extra byte and require the codec's end marker. A decoder
+ * that fills an exactly sized buffer can hide excess output or truncation. */
+static int digest_block(uint32_t type, uint8_t* dst, size_t expected,
+        const uint8_t* src, size_t size) {
+    if (!size) return expected == 0 ? APFS_OK : APFS_ECORRUPT;
+    if ((type == 3 || type == 4) && (src[0] & 15) != 15) {
+        uLongf length = expected + 1;
+        return uncompress(dst, &length, src, size) == Z_OK && length == expected ?
+            APFS_OK : APFS_ECORRUPT;
+    }
+    if ((type == 7 || type == 8) && src[0] != 0x06) {
+        lzvn_decoder_state state = {0};
+        state.src = src;
+        state.src_end = src + size;
+        state.dst = state.dst_begin = state.dst_current = dst;
+        state.dst_end = dst + expected + 1;
+        lzvn_decode(&state);
+        return state.end_of_stream && (size_t)(state.dst - dst) == expected ?
+            APFS_OK : APFS_ECORRUPT;
+    }
+    if ((type == 11 || type == 12) && src[0] != 0xff) {
+        lzfse_decoder_state* state = apfs_calloc(1, sizeof(*state));
+        int ret;
+        state->src = state->src_begin = src;
+        state->src_end = src + size;
+        state->dst = state->dst_begin = dst;
+        state->dst_end = dst + expected + 1;
+        ret = lzfse_decode(state) == LZFSE_STATUS_OK &&
+            (size_t)(state->dst - dst) == expected ? APFS_OK : APFS_ECORRUPT;
+        free(state);
+        return ret;
+    }
+    return decode_block(type, dst, expected + 1, src, size) == expected ? APFS_OK : APFS_ECORRUPT;
+}
+
+int apfs_decmpfs_digest(const uint8_t* attr, size_t len, uint64_t resource_size,
+        apfs_read_at_fn read_resource, void* ctx, uint8_t digest[32]) {
+    uint32_t type;
+    uint64_t size, pos = 0;
+    uint8_t *plain, *compressed;
+    apfs_sha256_ctx hash;
+    int ret = APFS_OK;
+    if(len < 16 || apfs_get32(attr) != DECMPFS_MAGIC) return APFS_ECORRUPT;
+    type = apfs_get32(attr + 4); size = apfs_get64(attr + 8);
+    apfs_sha256_init(&hash);
+    if(type == 1 || type == 3 || type == 7 || type == 9 || type == 11) {
+        /* Embedded records cannot justify an unbounded expansion allocation. */
+        if(size > 16 * 1024 * 1024) return APFS_EUNSUPP;
+        plain = apfs_malloc((size_t)size + 1);
+        if(digest_block(type, plain, (size_t)size, attr + 16, len - 16) < 0) ret = APFS_ECORRUPT;
+        else apfs_sha256_update(&hash, plain, (size_t)size);
+        free(plain);
+    } else if(type == 4 || type == 8 || type == 10 || type == 12) {
+        uint64_t chunks = size / CHUNK + (size % CHUNK != 0);
+        if(!read_resource) return APFS_ECORRUPT;
+        plain = apfs_malloc(CHUNK + 1); compressed = apfs_malloc(CHUNK * 2 + 64);
+        while(pos < size && ret == APFS_OK) {
+            uint8_t table[16]; uint64_t off, table_at; uint32_t clen;
+            size_t expected = size - pos > CHUNK ? CHUNK : (size_t)(size - pos);
+            if(type == 4) {
+                uint32_t base;
+                if(resource_size < 16 || read_resource(ctx, 0, table, 16) < 0) { ret = APFS_ECORRUPT; break; }
+                base = ((uint32_t)table[0]<<24) | ((uint32_t)table[1]<<16) | ((uint32_t)table[2]<<8) | table[3];
+                table_at = (uint64_t)base + 4;
+                if(table_at + 4 > resource_size || read_resource(ctx, table_at, table, 4) < 0 ||
+                        apfs_get32(table) != chunks) { ret = APFS_ECORRUPT; break; }
+                table_at += 4 + (pos / CHUNK) * 8;
+                if(table_at + 8 > resource_size || read_resource(ctx, table_at, table, 8) < 0) { ret = APFS_ECORRUPT; break; }
+                off = (uint64_t)base + 4 + apfs_get32(table); clen = apfs_get32(table + 4);
+            } else {
+                table_at = (pos / CHUNK) * 4;
+                if(table_at + 8 > resource_size || read_resource(ctx, table_at, table, 8) < 0 ||
+                        apfs_get32(table + 4) < apfs_get32(table)) { ret = APFS_ECORRUPT; break; }
+                off = apfs_get32(table); clen = apfs_get32(table + 4) - (uint32_t)off;
+            }
+            if(clen > CHUNK * 2 + 64 || off > resource_size || clen > resource_size - off ||
+                    read_resource(ctx, off, compressed, clen) < 0 ||
+                    digest_block(type, plain, expected, compressed, clen) < 0) ret = APFS_ECORRUPT;
+            else { apfs_sha256_update(&hash, plain, expected); pos += expected; }
+        }
+        free(plain); free(compressed);
+    } else return APFS_EUNSUPP;
+    if(ret == APFS_OK) apfs_sha256_final(&hash, digest);
+    return ret;
+}
+
 typedef struct {
 	uint32_t type;
 	uint64_t size;

@@ -407,6 +407,8 @@ int lzfse_decode(lzfse_decoder_state *s);
 
 size_t lzvn_decode_scratch_size(void);
 size_t lzvn_encode_scratch_size(void);
+size_t lzvn_encode_buffer_deep(void *dst, size_t dst_size, const void *src,
+                              size_t src_size, void *scratch);
 size_t lzvn_encode_buffer(void *__restrict dst, size_t dst_size,
                           const void *__restrict src, size_t src_size,
                           void *__restrict work);

@@ -370,6 +370,11 @@ static int dump_node_cb(apfs_btree_t* bt, apfs_btnode_t* n, int depth, void* ctx
 			if(bt->subtype == OBJECT_TYPE_OMAP)
 				fprintf(d->f, "%*s  [%u] oid 0x%llx xid %llu -> child 0x%llx\n", depth * 2, "", i, (unsigned long long)apfs_get64(r->k),
 					(unsigned long long)apfs_get64(r->k + 8), (unsigned long long)c);
+			else if(bt->subtype == OBJECT_TYPE_FSTREE || bt->subtype == OBJECT_TYPE_BLOCKREFTREE ||
+					bt->subtype == OBJECT_TYPE_SNAPMETATREE) {
+				fprintf(d->f, "%*s  [%u] -> child 0x%llx ", depth * 2, "", i, (unsigned long long)c);
+				dump_fs_record(bt, r, d->f);
+			}
 			else
 				fprintf(d->f, "%*s  [%u] klen %u -> child 0x%llx\n", depth * 2, "", i, r->klen, (unsigned long long)c);
 			continue;
