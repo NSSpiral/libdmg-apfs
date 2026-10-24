@@ -30,6 +30,14 @@
 #define HAVE_XATTR 1
 #endif
 
+#if defined(__APPLE__) && defined(F_PUNCHHOLE)
+#define HAVE_F_PUNCHHOLE 1
+#endif
+
+#if defined(__APPLE__)
+#include <AvailabilityMacros.h>
+#endif
+
 #include "apfs/apfs.h"
 #include "apfs/platform.h"
 
@@ -236,12 +244,22 @@ int plat_set_times(const char* path, uint64_t atime, uint64_t mtime) {
 	t.modtime = (time_t)(mtime / 1000000000ULL);
 	return _utime(path, &t) == 0 ? APFS_OK : APFS_EIO;
 #else
+#if defined(__APPLE__) && defined(MAC_OS_X_VERSION_MIN_REQUIRED) && \
+    MAC_OS_X_VERSION_MIN_REQUIRED < 101300
+	struct timeval tv[2];
+	tv[0].tv_sec = (time_t)(atime / 1000000000ULL);
+	tv[0].tv_usec = (suseconds_t)((atime % 1000000000ULL) / 1000);
+	tv[1].tv_sec = (time_t)(mtime / 1000000000ULL);
+	tv[1].tv_usec = (suseconds_t)((mtime % 1000000000ULL) / 1000);
+	return lutimes(path, tv) == 0 ? APFS_OK : APFS_EIO;
+#else
 	struct timespec ts[2];
 	ts[0].tv_sec = (time_t)(atime / 1000000000ULL);
 	ts[0].tv_nsec = (long)(atime % 1000000000ULL);
 	ts[1].tv_sec = (time_t)(mtime / 1000000000ULL);
 	ts[1].tv_nsec = (long)(mtime % 1000000000ULL);
 	return utimensat(AT_FDCWD, path, ts, AT_SYMLINK_NOFOLLOW) == 0 ? APFS_OK : APFS_EIO;
+#endif
 #endif
 }
 
@@ -436,7 +454,7 @@ int plat_sparse_file(FILE* f, uint64_t size) {
 }
 
 int plat_sparse_finish(FILE* f) {
-#ifdef __APPLE__
+#ifdef HAVE_F_PUNCHHOLE
 	static const uint8_t zero[4096];
 	uint8_t buf[64 << 10];
 	struct stat st;
