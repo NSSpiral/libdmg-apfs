@@ -155,6 +155,7 @@ paths are made relative and `..` components are refused.
 | `snapshots`, `snapshot create\|delete\|rename <name> [new]` | snapshots |
 | `volume add [options]`, `volume delete <volume>` | add or remove volumes |
 | `volume rename <name>`, `volume role <role>` | change the selected volume |
+| `volume export <output> [--format dmg\|raw]` | copy the selected volume and snapshots into a single-volume image |
 | `unseal` | turn a sealed volume into a plain, writable one |
 | `dmg <out.dmg> [-c lzfse\|zlib\|raw] [-b] [-n]` | export a UDIF image laid out like an IPSW's |
 | `raw <out> [-c]` | export the raw disk (`-c`: the container alone) |

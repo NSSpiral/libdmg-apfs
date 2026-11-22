@@ -24,6 +24,7 @@
 #include "apfs/mtree.h"
 #include "lzfse.h"
 #include "apfs/manifest.h"
+#include "apfs/volume-export.h"
 
 #define APFS_TOOL_VERSION "1.0"
 
@@ -659,7 +660,7 @@ static void default_vol_params(apfs_vol_params_t* vp) {
 
 static int cmd_volume(ctx_t* c, int argc, char** argv) {
 	int ret = APFS_EINVAL;
-	if(!need(argc, 2, "volume <add|delete|rename|role> ..."))
+	if(!need(argc, 2, "volume <add|delete|rename|role|export> ..."))
 		return 1;
 	if(!strcmp(argv[1], "add")) {
 		apfs_vol_params_t vp;
@@ -697,8 +698,21 @@ static int cmd_volume(ctx_t* c, int argc, char** argv) {
 			return 1;
 		}
 		ret = apfs_vol_set_role(c->vol, role);
+	} else if(!strcmp(argv[1], "export")) {
+		const char* format = "dmg";
+		if(!need(argc, 3, "volume export <output> [--format dmg|raw]"))
+			return 1;
+		if(argc == 5 && !strcmp(argv[3], "--format"))
+			format = argv[4];
+		else if(argc != 3) {
+			fprintf(stderr, "usage: volume export <output> [--format dmg|raw]\n");
+			return 1;
+		}
+		if(is_image(c, argv[2]))
+			return 1;
+		ret = apfs_export_volume(c->vol, argv[2], format);
 	} else {
-		fprintf(stderr, "usage: volume <add|delete|rename|role> ...\n");
+		fprintf(stderr, "usage: volume <add|delete|rename|role|export> ...\n");
 		return 1;
 	}
 	if(ret < 0)
@@ -1030,7 +1044,7 @@ static const command_t commands[] = {
 	{ "verify", cmd_verify, 0, 0 },
 	{ "snapshots", cmd_snapshots, 0, 1 },
 	{ "snapshot", cmd_snapshot, 2, 1 },
-	{ "volume", cmd_volume, 1, 0 },
+	{ "volume", cmd_volume, 2, 0 },
 	{ "unseal", cmd_unseal, 1, 1 },
 	{ "dmg", cmd_export, 0, 0 },
 	{ "raw", cmd_export, 0, 0 },
@@ -1086,6 +1100,7 @@ static void usage(const char* prog) {
 	printf("  compress [-R] <path> [zlib|lzvn|lzfse] | decompress [-R] <path>\n");
 	printf("  snapshots | snapshot create|delete|rename <name> [newname]\n");
 	printf("  volume add [-n name] [-r role] [-i|-e] | volume delete <volume> | volume rename <name>\n");
+	printf("  volume export <output> [--format dmg|raw]  export the selected volume and snapshots\n");
 	printf("  volume role <role> | unseal\n");
 	printf("  dmg <out.dmg> [-c lzfse|zlib|raw] [-b] [-n]  export an IPSW-style UDIF image\n");
 	printf("                                           (-b: no partition map, -n: skip imagescan data)\n");
@@ -1182,7 +1197,8 @@ int main(int argc, char* argv[]) {
 		fprintf(stderr, "error: unknown command %s\n", argv[i]);
 		return 1;
 	}
-	writable = cmd->writes == 1 || (cmd->writes == 2 && i + 1 < argc && strcmp(argv[i + 1], "list") != 0);
+	writable = cmd->writes == 1 || (cmd->writes == 2 && i + 1 < argc && strcmp(argv[i + 1], "list") != 0 &&
+		!(cmd->fn == cmd_volume && strcmp(argv[i + 1], "export") == 0));
 	if(writable && snapname) {
 		fprintf(stderr, "error: snapshots are read-only\n");
 		return 1;

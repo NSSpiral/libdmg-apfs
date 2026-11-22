@@ -46,7 +46,7 @@ APFS_SRC := apfs/util.c apfs/unicode.c apfs/btree.c apfs/omap.c apfs/spaceman.c 
 	apfs/image.c apfs/debug.c apfs/snapshot.c apfs/compress.c apfs/file.c \
 	apfs/mkfs.c apfs/platform.c apfs/apfslib.c apfs/tar.c apfs/udif.c \
 	apfs/resize.c apfs/seal.c apfs/verify.c apfs/trustcache.c apfs/mtree.c \
-	apfs/crypto.c apfs/encrypted.c apfs/manifest.c
+	apfs/crypto.c apfs/encrypted.c apfs/manifest.c apfs/volume-export.c
 
 LIB_SRC := $(COMMON_SRC) $(APFS_SRC) $(LZFSE_SRC)
 LIB_OBJ := $(LIB_SRC:%.c=$(BUILD)/obj/%.o)

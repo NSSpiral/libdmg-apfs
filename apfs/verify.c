@@ -1030,7 +1030,7 @@ static void check_free_queues(vctx_t* c, spaceman_phys_t* sm) {
 	}
 }
 
-static void check_spaceman(vctx_t* c) {
+static void check_spaceman(vctx_t* c, int allow_orphans) {
 	apfs_nx_t* nx = c->nx;
 	apfs_sm_t* sm = &nx->sm;
 	apfs_eph_t* e = apfs_nx_eph(nx, LE64(nx->sb->nx_spaceman_oid));
@@ -1089,7 +1089,7 @@ static void check_spaceman(vctx_t* c) {
 			leaked++;
 		}
 	}
-	if(leaked)
+	if(leaked && !allow_orphans)
 		problem(c, "%llu blocks are allocated but not used (the first is 0x%llx)", (unsigned long long)leaked,
 			(unsigned long long)first_leak);
 	if(free_blocks != LE64(p->sm_dev[SD_MAIN].sm_free_count))
@@ -1097,7 +1097,7 @@ static void check_spaceman(vctx_t* c) {
 			(unsigned long long)LE64(p->sm_dev[SD_MAIN].sm_free_count), (unsigned long long)free_blocks);
 }
 
-int apfs_verify(apfs_nx_t* nx, int verbose) {
+static int scan_container(apfs_nx_t* nx, int verbose, int allow_orphans, uint8_t** used_out, uint8_t** pending_out) {
 	nx_superblock_t* sb = nx->sb;
 	vctx_t c;
 	apfs_omap_rec_t* om = NULL;
@@ -1162,12 +1162,30 @@ int apfs_verify(apfs_nx_t* nx, int verbose) {
 			check_volume(&c, v);
 
 	progress(&c, "Checking the space manager");
-	check_spaceman(&c);
+	check_spaceman(&c, allow_orphans);
 
-	free(c.used);
-	free(c.pending);
+	if(used_out)
+		*used_out = c.used;
+	else
+		free(c.used);
+	if(pending_out)
+		*pending_out = c.pending;
+	else
+		free(c.pending);
 	free(c.seen);
 	if(c.problems)
 		APFS_ERR("%llu problem%s found", (unsigned long long)c.problems, c.problems == 1 ? "" : "s");
 	return c.problems ? APFS_ECORRUPT : APFS_OK;
+}
+
+int apfs_verify(apfs_nx_t* nx, int verbose) {
+	return scan_container(nx, verbose, 0, NULL, NULL);
+}
+
+int apfs_reachable_blocks(apfs_nx_t* nx, uint8_t** used, uint8_t** pending) {
+	if(!nx || !used || !pending || used == pending)
+		return APFS_EINVAL;
+	*used = NULL;
+	*pending = NULL;
+	return scan_container(nx, 0, 1, used, pending);
 }

@@ -650,6 +650,8 @@ int apfs_vol_root_hash_metadata(apfs_vol_t* vol, uint8_t out[APFS_ROOT_HASH_META
 /* Consistency checks (verify.c) */
 
 int apfs_verify(apfs_nx_t* nx, int verbose);
+/* Caller owns the reachable-block and pending-free bitmaps, even on error. */
+int apfs_reachable_blocks(apfs_nx_t* nx, uint8_t** used, uint8_t** pending);
 /* Check native logical records before importing any blocks. */
 int apfs_verify_fs_records(apfs_vol_t* vol, const apfs_kv_t* records, size_t count);
 
