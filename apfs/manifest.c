@@ -13,6 +13,8 @@
 #include <unistd.h>
 
 #ifdef _WIN32
+int apfs_manifest_inventory(apfs_vol_t *v, const char *m) { return APFS_EUNSUPP; }
+int apfs_manifest_extractfiles(apfs_vol_t *v, const char *t, const char *r) { return APFS_EUNSUPP; }
 int apfs_manifest_export(apfs_vol_t *v, const char *t, const char *m) { return APFS_EUNSUPP; }
 int apfs_manifest_import(apfs_vol_t *v, const char *t, const char *m) { return APFS_EUNSUPP; }
 int apfs_manifest_validate(const char *t, const char *m) { return APFS_EUNSUPP; }
@@ -24,7 +26,8 @@ typedef struct Context {
     jmp_buf error;
     apfs_vol_t *vol;
     J *doc, *nodes, *streams, *records, *inodes, *stream_index, *record_index, *stream_refs;
-    int tree, storage;
+    int tree, storage, inventory;
+    J *inline_streams;
     apfs_kv_t *kv;
     size_t count;
     size_t metadata_count;
@@ -562,7 +565,22 @@ static void record_add(Context *c, const apfs_kv_t *kv) {
         check(c, kv->vlen >= 4 && 4U + apfs_get16(kv->v + 2) == kv->vlen, "invalid xattr record length");
         if (apfs_get16(kv->v) & XATTR_DATA_STREAM) {
             check(c, kv->vlen == 52, "invalid external xattr stream record");
-            stream_add(c, apfs_get64(kv->v + 4), apfs_get64(kv->v + 12));
+            uint64_t stream = apfs_get64(kv->v + 4);
+            stream_add(c, stream, apfs_get64(kv->v + 12));
+            if (c->inventory) {
+                apfs_inode_t inode;
+                result(c, apfs_inode_read(c->vol, apfs_key_id(kv->k), &inode), "xattr owner");
+                /* Expanded imports regenerate compressed resource forks. */
+                if (!(inode.bsd_flags & APFS_UF_COMPRESSED) ||
+                    kv->klen != 10 + sizeof("com.apple.ResourceFork") ||
+                    memcmp(kv->k + 10, "com.apple.ResourceFork",
+                           sizeof("com.apple.ResourceFork"))) {
+                    char key[32];
+                    snprintf(key, sizeof(key), "%" PRIu64, stream);
+                    json_object_object_add(c->inline_streams, key, json_object_new_boolean(1));
+                }
+                apfs_inode_release(&inode);
+            }
         }
     }
 }
@@ -668,7 +686,8 @@ static void walk_paths(Context *c, uint64_t dir, const char *path, unsigned dept
             check(c, json_object_array_length(paths) == 0, "directory hardlink or cycle");
         json_object_array_add(paths, json_object_new_string(child));
         if ((inode.mode & APFS_S_IFMT) == APFS_S_IFDIR) {
-            host_mkdir(c, child);
+            if (!c->inventory)
+                host_mkdir(c, child);
             walk_paths(c, inode.ino, child, depth + 1);
         }
         apfs_inode_release(&inode);
@@ -699,24 +718,45 @@ static void export_contents(Context *c) {
         location = json_object_array_length(paths) ? "tree" : "storage";
         path = json_object_array_length(paths) ? json_object_get_string(json_object_array_get_idx(paths, 0))
                                                : saved;
-        fd = safe_open(c, !strcmp(location, "tree") ? c->tree : c->storage, path, O_WRONLY | O_CREAT | O_EXCL,
-                       0, NULL);
+        fd = c->inventory ? -1
+                          : safe_open(c, !strcmp(location, "tree") ? c->tree : c->storage, path,
+                                      O_WRONLY | O_CREAT | O_EXCL, 0, NULL);
+        apfs_sha256_ctx hash;
+        uint8_t digest[32];
+        apfs_sha256_init(&hash);
         result(c, apfs_file_size(c->vol, &inode, &size), "logical file size");
         for (pos = 0; pos < size;) {
             size_t want = size - pos > sizeof(buf) ? sizeof(buf) : (size_t)(size - pos), got = 0;
             result(c, apfs_file_read(c->vol, &inode, pos, buf, want, &got), "decode file contents");
             check(c, got == want, "short logical file read");
-            write_all(c, fd, buf, got);
+            if (c->inventory)
+                apfs_sha256_update(&hash, buf, got);
+            else
+                write_all(c, fd, buf, got);
             pos += got;
         }
-        close(fd);
-        json_object_object_add(node, "content", descriptor(c, location, path));
-        if (!(inode.bsd_flags & APFS_UF_COMPRESSED) && apfs_inode_get_dstream(&inode, &ds) == APFS_OK) {
+        if (c->inventory) {
+            J *desc = json_object_new_object();
+            apfs_sha256_final(&hash, digest);
+            puts_(desc, "location", "image");
+            putn(desc, "size", size);
+            puth(desc, "sha256", digest, 32);
+            json_object_object_add(node, "content", desc);
+        } else {
+            close(fd);
+            json_object_object_add(node, "content", descriptor(c, location, path));
+        }
+        char stream_key[32];
+        J *needed;
+        snprintf(stream_key, sizeof(stream_key), "%" PRIu64, inode.private_id);
+        if (!(inode.bsd_flags & APFS_UF_COMPRESSED) &&
+            apfs_inode_get_dstream(&inode, &ds) == APFS_OK &&
+            !(c->inventory && json_object_object_get_ex(c->inline_streams, stream_key, &needed))) {
             check(c, ds.size == size, "uncompressed stream size mismatch");
             json_object_object_add(indexed(c, c->stream_index, inode.private_id), "content",
                                    json_object_get(field(c, node, "content", json_type_object)));
         }
-        for (k = 1; k < json_object_array_length(paths); k++) {
+        for (k = 1; !c->inventory && k < json_object_array_length(paths); k++) {
             const char *alias = json_object_get_string(json_object_array_get_idx(paths, k));
             char *leaf;
             int dir = safe_open(c, c->tree, alias, 0, 1, &leaf);
@@ -737,10 +777,11 @@ static void export_contents(Context *c) {
             char *target;
             result(c, apfs_readlink(c->vol, inode.ino, &target), "read native symlink");
             puts_(node, "symlink", target);
-            for (k = 0; k < json_object_array_length(paths); k++) {
+            for (k = 0; !c->inventory && k < json_object_array_length(paths); k++) {
                 char *leaf;
-                int dir = safe_open(c, c->tree, json_object_get_string(json_object_array_get_idx(paths, k)),
-                                    0, 1, &leaf);
+                int dir = safe_open(c, c->tree,
+                                    json_object_get_string(json_object_array_get_idx(paths, k)), 0,
+                                    1, &leaf);
                 check(c, symlinkat(target, dir, leaf) == 0, "export symlink");
                 free(leaf);
                 close(dir);
@@ -763,15 +804,45 @@ static void export_streams(Context *c) {
             char path[64];
             int fd;
             snprintf(path, sizeof(path), "stream-%" PRIu64, id);
-            fd = safe_open(c, c->storage, path, O_CREAT | O_EXCL | O_WRONLY, 0, NULL);
+            fd = c->inventory
+                     ? -1
+                     : safe_open(c, c->storage, path, O_CREAT | O_EXCL | O_WRONLY, 0, NULL);
+            apfs_sha256_ctx hash;
+            uint8_t digest[32], *inline_data = NULL;
+            char stream_key[32];
+            J *needed;
+            snprintf(stream_key, sizeof(stream_key), "%" PRIu64, id);
+            if (c->inventory && json_object_object_get_ex(c->inline_streams, stream_key, &needed)) {
+                check(c, size <= 64 * 1024 * 1024, "external xattr too large for inventory");
+                inline_data = apfs_malloc((size_t)size + 1);
+            }
+            apfs_sha256_init(&hash);
             for (pos = 0; pos < size;) {
                 size_t n = size - pos > sizeof(buf) ? sizeof(buf) : (size_t)(size - pos);
                 result(c, apfs_dstream_read(c->vol, id, size, pos, buf, n), "read raw stream");
-                write_all(c, fd, buf, n);
+                if (c->inventory) {
+                    apfs_sha256_update(&hash, buf, n);
+                    if (inline_data)
+                        memcpy(inline_data + pos, buf, n);
+                } else
+                    write_all(c, fd, buf, n);
                 pos += n;
             }
-            close(fd);
-            json_object_object_add(stream, "content", descriptor(c, "storage", path));
+            if (c->inventory) {
+                J *desc = json_object_new_object();
+                apfs_sha256_final(&hash, digest);
+                puts_(desc, "location", "image");
+                putn(desc, "size", size);
+                puth(desc, "sha256", digest, 32);
+                if (inline_data) {
+                    puth(desc, "inline_hex", inline_data, (size_t)size);
+                    free(inline_data);
+                }
+                json_object_object_add(stream, "content", desc);
+            } else {
+                close(fd);
+                json_object_object_add(stream, "content", descriptor(c, "storage", path));
+            }
         }
         apfs_key_hdr(key, id, APFS_TYPE_FILE_EXTENT);
         apfs_put64(key + 8, 0);
@@ -844,7 +915,7 @@ static char *storage_name(const char *path) {
     return s;
 }
 
-int apfs_manifest_export(apfs_vol_t *vol, const char *tree, const char *manifest) {
+static int manifest_export(apfs_vol_t *vol, const char *tree, const char *manifest, int inventory) {
     Context *c = context_new();
     int ret = APFS_ECORRUPT;
     if (setjmp(c->error) == 0) {
@@ -853,17 +924,21 @@ int apfs_manifest_export(apfs_vol_t *vol, const char *tree, const char *manifest
         char *storage;
         int fd, status;
         c->vol = vol;
+        c->inventory = inventory;
+        c->inline_streams = json_object_new_object();
         supported(c, vol);
-        check(c, mkdir(tree, 0700) == 0, "export tree must be new");
-        c->tree = open(tree, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
-        check(c, c->tree >= 0, "open export tree");
-        storage = storage_name(manifest);
-        check(c, mkdir(storage, 0700) == 0, "manifest storage must be new");
-        c->storage = open(storage, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
-        free(storage);
-        check(c, c->storage >= 0, "open manifest storage");
+        if (!inventory) {
+            check(c, mkdir(tree, 0700) == 0, "export tree must be new");
+            c->tree = open(tree, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+            check(c, c->tree >= 0, "open export tree");
+            storage = storage_name(manifest);
+            check(c, mkdir(storage, 0700) == 0, "manifest storage must be new");
+            c->storage = open(storage, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+            free(storage);
+            check(c, c->storage >= 0, "open manifest storage");
+        }
         c->doc = json_object_new_object();
-        puts_(c->doc, "schema", APFS_NATIVE_SCHEMA);
+        puts_(c->doc, "schema", inventory ? "apple-firmware.apfs-inventory/1" : APFS_NATIVE_SCHEMA);
         putn(c->doc, "block_size", vol->nx->bs);
         json_object_object_add(c->doc, "volume", volume_export(vol));
         c->nodes = json_object_new_array();
@@ -882,8 +957,9 @@ int apfs_manifest_export(apfs_vol_t *vol, const char *tree, const char *manifest
             status = apfs_bt_iter_next(&it);
         }
         result(c, status, "read native records");
-        json_object_array_add(field(c, indexed(c, c->inodes, ROOT_DIR_INO_NUM), "paths", json_type_array),
-                              json_object_new_string(""));
+        json_object_array_add(
+            field(c, indexed(c, c->inodes, ROOT_DIR_INO_NUM), "paths", json_type_array),
+            json_object_new_string(""));
         walk_paths(c, ROOT_DIR_INO_NUM, "", 0);
         export_contents(c);
         export_streams(c);
@@ -892,6 +968,55 @@ int apfs_manifest_export(apfs_vol_t *vol, const char *tree, const char *manifest
         check(c, json_object_to_fd(fd, c->doc, JSON_C_TO_STRING_PRETTY) == 0 && fsync(fd) == 0,
               "write native manifest");
         close(fd);
+        ret = APFS_OK;
+    }
+    if (c->inline_streams)
+        json_object_put(c->inline_streams);
+    context_free(c);
+    return ret;
+}
+
+int apfs_manifest_export(apfs_vol_t *v, const char *t, const char *m) {
+    return manifest_export(v, t, m, 0);
+}
+int apfs_manifest_inventory(apfs_vol_t *v, const char *m) { return manifest_export(v, NULL, m, 1); }
+int apfs_manifest_extractfiles(apfs_vol_t *vol, const char *tree, const char *request) {
+    Context *c = context_new();
+    int ret = APFS_ECORRUPT;
+    if (setjmp(c->error) == 0) {
+        struct stat st;
+        int fd = open(request, O_RDONLY | O_NOFOLLOW);
+        check(c,
+              fd >= 0 && !fstat(fd, &st) && S_ISREG(st.st_mode) && st.st_size > 0 &&
+                  st.st_size <= 16 * 1024 * 1024,
+              "request size/type");
+        c->doc = json_object_from_fd(fd);
+        close(fd);
+        J *files = field(c, c->doc, "files", json_type_array);
+        c->tree = open(tree, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+        check(c, c->tree >= 0, "open extraction tree");
+        for (size_t i = 0; i < json_object_array_length(files); i++) {
+            J *entry = json_object_array_get_idx(files, i);
+            apfs_inode_t inode;
+            uint64_t size, pos = 0;
+            uint8_t buf[65536];
+            result(c, apfs_inode_read(vol, number(c, entry, "id"), &inode),
+                   "read extraction inode");
+            check(c, (inode.mode & APFS_S_IFMT) == APFS_S_IFREG,
+                  "extraction requires regular inode");
+            result(c, apfs_file_size(vol, &inode, &size), "extraction size");
+            fd = safe_open(c, c->tree, string(c, entry, "path"), O_WRONLY | O_CREAT | O_EXCL, 0,
+                           NULL);
+            while (pos < size) {
+                size_t n = size - pos > sizeof(buf) ? sizeof(buf) : (size_t)(size - pos), got = 0;
+                result(c, apfs_file_read(vol, &inode, pos, buf, n, &got), "extract logical data");
+                check(c, got == n, "short extraction read");
+                write_all(c, fd, buf, n);
+                pos += n;
+            }
+            check(c, close(fd) == 0, "close extracted file");
+            apfs_inode_release(&inode);
+        }
         ret = APFS_OK;
     }
     context_free(c);

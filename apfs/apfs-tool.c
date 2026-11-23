@@ -210,6 +210,14 @@ static int cmd_extract(ctx_t* c, int argc, char** argv) {
 	return apfslib_extract(c->vol, argv[1], argv[2]) < 0;
 }
 
+static int cmd_inventory(ctx_t* c, int argc, char** argv) {
+	if(argc != 2) return 1;
+	return apfs_manifest_inventory(c->vol, argv[1]) < 0;
+}
+static int cmd_extractfiles(ctx_t* c, int argc, char** argv) {
+	if(argc != 4 || strcmp(argv[2], "--request")) return 1;
+	return apfs_manifest_extractfiles(c->vol, argv[1], argv[3]) < 0;
+}
 static int cmd_extractall(ctx_t* c, int argc, char** argv) {
 	if(argc == 4 && !strcmp(argv[2], "--manifest"))
 		return apfs_manifest_export(c->vol, argv[1], argv[3]) < 0;
@@ -1016,6 +1024,8 @@ static const command_t commands[] = {
 	{ "cat", cmd_cat, 0, 1 },
 	{ "extract", cmd_extract, 0, 1 },
 	{ "extractall", cmd_extractall, 0, 1 },
+	{ "inventory", cmd_inventory, 0, 1 },
+	{ "extractfiles", cmd_extractfiles, 0, 1 },
 	{ "mv", cmd_mv, 1, 1 },
 	{ "symlink", cmd_symlink, 1, 1 },
 	{ "mkdir", cmd_mkdir, 1, 1 },
@@ -1067,6 +1077,8 @@ static void usage(const char* prog) {
 	printf("  apfs-tool - manifest-version\n");
 	printf("  apfs-tool - decode-lzfse INPUT OUTPUT DECODED_BYTES\n");
 	printf("  apfs-tool SOURCE extractall TREE --manifest MANIFEST.json\n");
+	printf("  apfs-tool SOURCE inventory INVENTORY.json\n");
+	printf("  apfs-tool SOURCE extractfiles TREE --request REQUEST.json (files: [{id, path}])\n");
 	printf("  apfs-tool - validateall TREE --manifest MANIFEST.json\n");
 	printf("  apfs-tool FRESH addall TREE / --manifest MANIFEST.json\n\n");
 	printf("  apfs-tool FRESH addall TREE / --metadata METADATA.json\n\n");

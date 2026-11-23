@@ -60,6 +60,8 @@ opens a snapshot of it read-only.
 | `cat <path>` | write a file to standard output |
 | `extract <path> <dest>` | copy a file out of the image |
 | `extractall [-X] [path] [dest]` | copy a tree out (`-X` skips extended attributes) |
+| `inventory <json>` | read native metadata and logical hashes without exporting files |
+| `extractfiles <tree> --request <json>` | extract regular inodes listed as `{"files":[{"id":16,"path":"relative/output"}]}` |
 | `mv <src> <dst>` | move or rename |
 | `symlink <path> <target>` | create a symbolic link |
 | `mkdir [-p] [-m mode] <path>` | create a directory |
