@@ -70,6 +70,9 @@ opens a snapshot of it read-only.
 | `rmall [path]` | remove a directory tree |
 | `addall [-c algo] [-s] [-P] [-O uid:gid] [-X] <dir> [dst]` | copy a host directory into an existing directory |
 | `grow <size>` | grow the container (and its partition and image) |
+| `shrink <size>` | rebuild and verify a smaller bare, unencrypted, unsealed single-volume image without snapshots, 64 MiB to 2 GiB |
+| `fit TREE --manifest JSON [--size N] [--reserve N] [--maximum N]` | plan native allocation in memory and write one image, with 2 MiB free by default |
+| `fit TREE --metadata JSON --like NATIVE [--size N] [--reserve N] [--maximum N]` | fit portable metadata using the native manifest's volume format |
 | `untar [-c algo] [-s] <tar> [dst]` | extract a tar archive into the image ([details](#tar-archives)) |
 | `getattr <path> <name>` | write an extended attribute to standard output |
 | `debug [verbose]` | dump the on-disk structures |

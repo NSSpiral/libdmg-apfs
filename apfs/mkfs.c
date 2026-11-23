@@ -154,6 +154,21 @@ static void make_empty_fixed_root(uint8_t* buf, uint32_t bs, oid_t oid, uint32_t
 	apfs_put64(info + 32, 1);
 }
 
+/* Physical formatter reservation, before adding the volume's live objects.
+ * Used to partition fitting into ranges whose available capacity increases. */
+uint64_t apfs_mkfs_reserved_blocks(uint64_t size, uint32_t bs) {
+    if(bs<NX_MINIMUM_BLOCK_SIZE || bs>NX_MAXIMUM_BLOCK_SIZE || (bs&(bs-1)) || size%bs)
+        return UINT64_MAX;
+    uint64_t blocks=size/bs, bpc=(uint64_t)bs*8;
+    uint64_t cpc=(bs-sizeof(chunk_info_block_t))/sizeof(chunk_info_t);
+    uint64_t cpcab=(bs-sizeof(cib_addr_block_t))/sizeof(paddr_t);
+    uint64_t chunks=(blocks+bpc-1)/bpc;
+    uint64_t cib=(chunks+cpc-1)/cpc, cab=(cib+cpcab-1)/cpcab;
+    if(cab==1)cab=0;
+    uint64_t pool=(chunks+cib+cab)*3, ipbm=(pool+bpc-1)/bpc;
+    return 1+desc_blocks_for(blocks)+data_blocks_for(blocks)+16*ipbm+pool+2;
+}
+
 int apfs_mkfs(io_func* io, uint64_t base, const apfs_mkfs_params_t* params) {
 	uint32_t bs = params->block_size ? params->block_size : NX_DEFAULT_BLOCK_SIZE;
 	uint64_t nblocks = params->size / bs;

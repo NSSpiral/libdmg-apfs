@@ -810,6 +810,7 @@ static int add_tree(add_ctx_t* c, const char* srcdir, uint64_t dir, const char* 
 		int exists;
 		uint16_t type;
 		uint64_t ino = 0;
+		ret = APFS_OK;
 
 		if(plat_lstat(src, &st) < 0) {
 			APFS_ERR("cannot stat %s", src);
@@ -840,7 +841,13 @@ static int add_tree(add_ctx_t* c, const char* srcdir, uint64_t dir, const char* 
 					goto next;
 				}
 			}
-			add_tree(c, src, ino, dst);
+			ret = add_tree(c, src, ino, dst);
+			if(ret < 0) {
+				free(src);
+				free(dst);
+				plat_free_list(names, n);
+				return ret;
+			}
 			import_meta(c, src, &st, ino, 0);
 		} else {
 			size_t k;
@@ -977,6 +984,12 @@ next_meta:
 		if(exists)
 			apfs_dirent_release(&de);
 next:
+		if(ret == APFS_ENOSPC) {
+			free(src);
+			free(dst);
+			plat_free_list(names, n);
+			return ret;
+		}
 		free(src);
 		free(dst);
 	}

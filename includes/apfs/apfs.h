@@ -635,6 +635,7 @@ typedef struct {
 	const apfs_vol_params_t* vols;
 } apfs_mkfs_params_t;
 
+uint64_t apfs_mkfs_reserved_blocks(uint64_t size, uint32_t block_size);
 int apfs_mkfs(io_func* io, uint64_t base, const apfs_mkfs_params_t* params);
 int apfs_nx_resize(apfs_nx_t* nx, uint64_t new_size);
 

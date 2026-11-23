@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "apfs/apfs.h"
+#include "apfs/fit.h"
 
 static int is_compressed(const apfs_inode_t* inode) {
 	return (inode->bsd_flags & APFS_UF_COMPRESSED) != 0;
@@ -156,7 +157,7 @@ int apfs_file_write(apfs_vol_t* vol, uint64_t ino, apfs_source_fn src, void* ctx
 
 /* Compresses one chunk; returns the stored length. Incompressible data is
  * stored with the algorithm's "raw" marker. */
-static size_t compress_chunk(int algo, const uint8_t* src, size_t len, uint8_t* dst, size_t cap, int exact) {
+static size_t compress_chunk_uncached(int algo, const uint8_t* src, size_t len, uint8_t* dst, size_t cap, int exact) {
 	size_t n = 0;
 	if(exact && len < 0x78 && algo != AFSC_PLAIN) {
 		dst[0] = algo == APFS_COMPRESS_LZVN ? 0x06 : 0xff;
@@ -204,6 +205,12 @@ static size_t compress_chunk(int algo, const uint8_t* src, size_t len, uint8_t* 
 		}
 	}
 	return n;
+}
+
+apfs_chunk_cache apfs_compress_cache;
+static size_t compress_chunk(int algo,const uint8_t *src,size_t len,uint8_t *dst,size_t cap,int exact) {
+    return apfs_compress_cache ? apfs_compress_cache(algo,src,len,dst,cap,exact,compress_chunk_uncached) :
+        compress_chunk_uncached(algo,src,len,dst,cap,exact);
 }
 
 static int write_compressed_layout(apfs_vol_t* vol, uint64_t ino, const uint8_t* data,

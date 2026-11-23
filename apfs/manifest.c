@@ -28,6 +28,7 @@ typedef struct Context {
     apfs_kv_t *kv;
     size_t count;
     size_t metadata_count;
+    int status;
 } Context;
 
 static void check(Context *c, int ok, const char *why);
@@ -270,8 +271,9 @@ int apfs_metadata_import(apfs_vol_t *vol, const char *tree, const char *manifest
 
     c->vol = vol;
     if (setjmp(c->error)) {
+        int status = c->status ? c->status : APFS_EINVAL;
         context_free(c);
-        return APFS_EINVAL;
+        return status;
     }
     check(c, !stat(manifest, &st) && S_ISREG(st.st_mode) && st.st_size > 0 && st.st_size <= 512 * 1024 * 1024,
           "portable metadata file");
@@ -325,8 +327,10 @@ static void check(Context *c, int ok, const char *why) {
         bad(c, why);
 }
 static void result(Context *c, int ret, const char *why) {
-    if (ret < 0)
+    if (ret < 0) {
+        c->status = ret;
         bad(c, why);
+    }
 }
 static J *field(Context *c, J *j, const char *key, enum json_type type) {
     J *v;
@@ -1364,6 +1368,8 @@ int apfs_manifest_import(apfs_vol_t *vol, const char *tree, const char *manifest
             write_stream(c, vol, json_object_array_get_idx(c->streams, i));
         ret = APFS_OK;
     }
+    if (ret < 0 && c->status)
+        ret = c->status;
     context_free(c);
     return ret;
 }

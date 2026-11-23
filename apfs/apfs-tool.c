@@ -26,6 +26,8 @@
 #include "apfs/manifest.h"
 #include "apfs/volume-export.h"
 
+#include "apfs/fit.h"
+
 #define APFS_TOOL_VERSION "1.0"
 
 char endianness = IS_LITTLE_ENDIAN;
@@ -1086,6 +1088,9 @@ static void usage(const char* prog) {
 	printf("  chmod [-R] <mode> <path>                 change permissions (octal)\n");
 	printf("  chown [-R] <uid>:<gid> <path>            change owner\n");
 	printf("  rmall [path]                             remove a directory tree\n");
+	printf("  shrink <size>                         rebuild a smaller bare single-volume image, 64 MiB..2 GiB\n");
+	printf("  fit TREE --manifest JSON [--size N] [--reserve N] [--maximum N]\n");
+	printf("  fit TREE --metadata JSON --like NATIVE [--size N] [--reserve N] [--maximum N]\n");
 	printf("  addall [--legacy-hardlinks] [-c algo] [-s] [-P] [-O uid:gid] [-X] <dir> [dst]\n");
 	printf("                                           copy a directory tree in\n");
 	printf("  grow <size>                              grow the container\n");
@@ -1135,6 +1140,8 @@ int main(int argc, char* argv[]) {
 	int i, ret, writable, vi;
 
 	TestByteOrder();
+	if(argc >= 3 && (!strcmp(argv[2], "fit") || !strcmp(argv[2], "shrink")))
+		return apfs_fit_command(argc,argv);
 	if(argc == 6 && !strcmp(argv[1], "-") && !strcmp(argv[2], "decode-lzfse"))
 		return decode_lzfse_block(argv[3], argv[4], argv[5]);
 	if(argc == 3 && !strcmp(argv[2], "manifest-version")) {
