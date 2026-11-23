@@ -211,6 +211,8 @@ static int cmd_extract(ctx_t* c, int argc, char** argv) {
 }
 
 static int cmd_inventory(ctx_t* c, int argc, char** argv) {
+	if(argc == 3 && !strcmp(argv[2], "--metadata-only"))
+		return apfs_manifest_inventory_metadata(c->vol, argv[1]) < 0;
 	if(argc != 2) return 1;
 	return apfs_manifest_inventory(c->vol, argv[1]) < 0;
 }
@@ -1077,8 +1079,8 @@ static void usage(const char* prog) {
 	printf("  apfs-tool - manifest-version\n");
 	printf("  apfs-tool - decode-lzfse INPUT OUTPUT DECODED_BYTES\n");
 	printf("  apfs-tool SOURCE extractall TREE --manifest MANIFEST.json\n");
-	printf("  apfs-tool SOURCE inventory INVENTORY.json\n");
-	printf("  apfs-tool SOURCE extractfiles TREE --request REQUEST.json (files: [{id, path}])\n");
+	printf("  apfs-tool SOURCE inventory INVENTORY.json [--metadata-only]\n");
+	printf("  apfs-tool SOURCE extractfiles TREE --request JSON|- (files: [{id, path}], returns hashes)\n");
 	printf("  apfs-tool - validateall TREE --manifest MANIFEST.json\n");
 	printf("  apfs-tool FRESH addall TREE / --manifest MANIFEST.json\n\n");
 	printf("  apfs-tool FRESH addall TREE / --metadata METADATA.json\n\n");
