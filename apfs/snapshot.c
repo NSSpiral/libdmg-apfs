@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "apfs/apfs.h"
+#include "compat_macos.h"
 
 #define SNAP_NAME_ID (~0ULL & OBJ_ID_MASK)
 #define SNAP_NAME_MAX 255

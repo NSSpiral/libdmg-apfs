@@ -11,6 +11,7 @@
 #include <setjmp.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "compat_macos.h"
 
 #ifdef _WIN32
 int apfs_manifest_inventory(apfs_vol_t *v, const char *m) { return APFS_EUNSUPP; }

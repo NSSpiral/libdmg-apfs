@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "apfs/apfs.h"
+#include "compat_macos.h"
 
 #define INODE_FIXED_SIZE 0x5c
 
